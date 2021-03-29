@@ -1,0 +1,138 @@
+---
+title: "Machine Learning Project"
+author: "Andrea Ballestero"
+date: "28/03/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, cache = TRUE)
+library(caret)
+library(readr)
+library(dplyr)
+library(stringr)
+library(randomForest)
+library(ggraph)
+library(igraph)
+```
+
+## Description of the project
+
+This is the prediction assignment writeup for the Practical Machine Learning module of the Data Science: Statistics and Machine Learning Specialization, by John Hopkins University. The goal of this project is to predict the manner in which 6 participants performed barbell lifts. The Weight Lifting Exercise Dataset source is http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har 
+
+The participants of this investigation were asked to perform the barbell lifts correctly (classe A) and incorrectly in 5 different ways (classes B to E). In order to measure their performance they were asked to use accelerometers on the belt, forearm, arm and dumbell. These metrics became the features used for the analysis.
+
+The first step was to load the datasets (one for training the model and another one for testing it).
+
+```{r}
+pml_training <- read_csv("pml-training.csv")
+pml_testing <- read_csv("pml-testing.csv")
+```
+
+## Model building 
+
+To clean the data set and prepare it for the model building, I created another data set with the training values which did not contain NA values, and I converted the character columns to factor columns. 
+
+```{r}
+countNA <- sapply(pml_training, function(y) sum(length(which(is.na(y)))))
+countNA <- data.frame(countNA)
+namesV <- rownames(countNA)
+countNA <- mutate(countNA, var_names = namesV)
+stay <- countNA[countNA$countNA == 0,2]
+
+new_training <- select(pml_training, stay)
+new_training <- new_training[,-c(1,3,4,5,6,7)]
+new_training[sapply(new_training, is.character)] <- lapply(new_training[sapply(new_training, is.character)], as.factor)
+```
+
+## Cross validation and expected out of sample error
+
+Then I separated the training data set into a new training set, which contained 75% of the observations, and a testing set, in order to do cross validation. Then I ran the random forest method on the training set, using the caret package. The resulting model is named "modFit". 
+
+```{r}
+inTrain <- createDataPartition(y=new_training$classe, p=0.75, list=FALSE)
+training <- new_training[inTrain,]
+testing <- new_training[-inTrain,]
+modFit <- train(classe ~ .,method="rf",data=training)
+```
+When I used this model to predict the values on my newly created testing set, I obtained an accuracy of 99.49%, and an OOB estimate of error rate of 0.61%. This means the out of sample error rate would be no less than 0.61%. 
+
+When I examined the most important variables on the model, I obtained the following results, as seen on the graph:
+
+```{r}
+prediction <- predict(modFit, newdata = testing)
+confusionMatrix(prediction, testing$classe) 
+varImpPlot(modFit$finalModel, sort = TRUE)
+```
+
+As seen on the following graph, roll_belt was the most important variable on the data set, clearly dividing the values in two big groups:
+
+```{r}
+qplot(roll_belt, pitch_forearm, col = classe, data = training)
+```
+
+## Prediction of 20 test cases
+
+Finally, I applied the random forest model to the testing data set which contained values for 20 participants, and was given by the University as an exam for this part of the course. The model results are presented below:
+
+```{r}
+predictionFinal <- predict(modFit, newdata = pml_testing)
+predictionFinal
+```
+
+I also plotted the random forest following a guide created by https://shiring.github.io/machine_learning/2017/03/16/rf_plot_ggraph 
+
+## Tree graph
+
+```{r}
+tree_func <- function(final_model, 
+                      tree_num) {
+  
+  # get tree by index
+  tree <- randomForest::getTree(final_model, 
+                                k = tree_num, 
+                                labelVar = TRUE) %>%
+    tibble::rownames_to_column() %>%
+    # make leaf split points to NA, so the 0s won't get plotted
+    mutate(`split point` = ifelse(is.na(prediction), `split point`, NA))
+  
+  # prepare data frame for graph
+  graph_frame <- data.frame(from = rep(tree$rowname, 2),
+                            to = c(tree$`left daughter`, tree$`right daughter`))
+  
+  # convert to graph and delete the last node that we don't want to plot
+  graph <- graph_from_data_frame(graph_frame) %>%
+    delete_vertices("0")
+  
+  # set node labels
+  V(graph)$node_label <- gsub("_", " ", as.character(tree$`split var`))
+  V(graph)$leaf_label <- as.character(tree$prediction)
+  V(graph)$split <- as.character(round(tree$`split point`, digits = 2))
+  
+  # plot
+  plotFinal <- ggraph(graph, 'dendrogram') + 
+    theme_bw() +
+    geom_edge_link() +
+    geom_node_point() +
+    geom_node_text(aes(label = node_label), na.rm = TRUE, repel = TRUE) +
+    geom_node_label(aes(label = split), vjust = 2.5, na.rm = TRUE, fill = "white") +
+    geom_node_label(aes(label = leaf_label, fill = leaf_label), na.rm = TRUE, 
+                    repel = TRUE, colour = "white", fontface = "bold", show.legend = FALSE) +
+    theme(panel.grid.minor = element_blank(),
+          panel.grid.major = element_blank(),
+          panel.background = element_blank(),
+          plot.background = element_rect(fill = "white"),
+          panel.border = element_blank(),
+          axis.line = element_blank(),
+          axis.text.x = element_blank(),
+          axis.text.y = element_blank(),
+          axis.ticks = element_blank(),
+          axis.title.x = element_blank(),
+          axis.title.y = element_blank(),
+          plot.title = element_text(size = 18))
+  
+  print(plotFinal)
+}
+
+tree_func(modFit$finalModel, 2)
+```
